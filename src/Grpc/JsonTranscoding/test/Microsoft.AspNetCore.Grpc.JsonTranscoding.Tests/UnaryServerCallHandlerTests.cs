@@ -417,8 +417,11 @@ public class UnaryServerCallHandlerTests : LoggedTest
 
     [Theory]
     [InlineData("{malformed_json}", "Request JSON payload is not correctly formatted.")]
+    [InlineData("[malformed_json]", "Request JSON payload is not correctly formatted.")]
+    [InlineData("[1]", "Request JSON payload is not correctly formatted.")]
+    [InlineData("1", "Request JSON payload is not correctly formatted.")]
+    [InlineData("null", "Unable to deserialize null to HelloRequest.")]
     [InlineData("{\"name\": 1234}", "Request JSON payload is not correctly formatted.")]
-    //[InlineData("{\"abcd\": 1234}", "Unknown field: abcd")]
     public async Task HandleCallAsync_MalformedRequestBody_BadRequestReturned(string json, string expectedError)
     {
         // Arrange
@@ -430,6 +433,45 @@ public class UnaryServerCallHandlerTests : LoggedTest
         var unaryServerCallHandler = CreateCallHandler(
             invoker,
             descriptorInfo: TestHelpers.CreateDescriptorInfo(bodyDescriptor: HelloRequest.Descriptor));
+        var httpContext = TestHelpers.CreateHttpContext();
+        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        httpContext.Request.ContentType = "application/json";
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        Assert.Equal(400, httpContext.Response.StatusCode);
+
+        httpContext.Response.Body.Seek(0, SeekOrigin.Begin);
+        using var responseJson = JsonDocument.Parse(httpContext.Response.Body);
+        Assert.Equal(expectedError, responseJson.RootElement.GetProperty("message").GetString());
+        Assert.Equal(expectedError, responseJson.RootElement.GetProperty("error").GetString());
+        Assert.Equal((int)StatusCode.InvalidArgument, responseJson.RootElement.GetProperty("code").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("{malformed_json}", "Request JSON payload is not correctly formatted.")]
+    [InlineData("[malformed_json]", "Request JSON payload is not correctly formatted.")]
+    [InlineData("1", "Request JSON payload is not correctly formatted.")]
+    [InlineData("null", "Unable to deserialize null to List`1.")]
+    [InlineData("{\"name\": 1234}", "Request JSON payload is not correctly formatted.")]
+    public async Task HandleCallAsync_MalformedRequestBody_RepeatedBody_BadRequestReturned(string json, string expectedError)
+    {
+        // Arrange
+        UnaryServerMethod<JsonTranscodingGreeterService, HelloRequest, HelloReply> invoker = (s, r, c) =>
+        {
+            return Task.FromResult(new HelloReply());
+        };
+
+        ServiceDescriptorHelpers.TryResolveDescriptors(HelloRequest.Descriptor, "repeated_strings", out var bodyFieldDescriptors);
+
+        var descriptorInfo = TestHelpers.CreateDescriptorInfo(
+            bodyDescriptor: HelloRequest.Types.SubMessage.Descriptor,
+            bodyDescriptorRepeated: true,
+            bodyFieldDescriptors: bodyFieldDescriptors);
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            descriptorInfo);
         var httpContext = TestHelpers.CreateHttpContext();
         httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(json));
         httpContext.Request.ContentType = "application/json";
@@ -593,6 +635,36 @@ public class UnaryServerCallHandlerTests : LoggedTest
         httpContext.Response.Body.Seek(0, SeekOrigin.Begin);
         using var responseJson = JsonDocument.Parse(httpContext.Response.Body);
         Assert.Equal(@"Hello World!", responseJson.RootElement.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task HandleCallAsync_HttpBodyRequest_NoBody_RawRequestAvailable()
+    {
+        // Arrange
+        string? requestContentType = null;
+        byte[]? requestData = null;
+        UnaryServerMethod<JsonTranscodingGreeterService, HttpBody, HelloReply> invoker = (s, r, c) =>
+        {
+            requestContentType = r.ContentType;
+            requestData = r.Data.ToByteArray();
+
+            return Task.FromResult(new HelloReply());
+        };
+
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            CreateServiceMethod("HttpRequestBody", HttpBody.Parser, HelloReply.Parser),
+            descriptorInfo: TestHelpers.CreateDescriptorInfo(bodyDescriptor: HttpBody.Descriptor));
+        var requestContent = new XDocument(new XElement("name", "World")).ToString();
+
+        var httpContext = TestHelpers.CreateHttpContext();
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        Assert.Equal("", requestContentType);
+        Assert.Empty(requestData!);
     }
 
     [Fact]

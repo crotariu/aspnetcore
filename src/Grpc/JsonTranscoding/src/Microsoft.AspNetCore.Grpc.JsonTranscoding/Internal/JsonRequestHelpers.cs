@@ -208,35 +208,40 @@ internal static class JsonRequestHelpers
 
                     try
                     {
+                        Type type;
                         if (serverCallContext.DescriptorInfo.BodyDescriptorRepeated)
                         {
                             requestMessage = (IMessage)Activator.CreateInstance<TRequest>();
 
                             // TODO: JsonSerializer currently doesn't support deserializing values onto an existing object or collection.
                             // Either update this to use new functionality in JsonSerializer or improve work-around perf.
-                            var type = JsonConverterHelper.GetFieldType(serverCallContext.DescriptorInfo.BodyFieldDescriptors.Last());
-                            var listType = typeof(List<>).MakeGenericType(type);
+                            type = JsonConverterHelper.GetFieldType(serverCallContext.DescriptorInfo.BodyFieldDescriptors.Last());
+                            type = typeof(List<>).MakeGenericType(type);
 
-                            GrpcServerLog.DeserializingMessage(serverCallContext.Logger, listType);
+                            GrpcServerLog.DeserializingMessage(serverCallContext.Logger, type);
 
-                            bodyContent = (await JsonSerializer.DeserializeAsync(stream, listType, serializerOptions))!;
+                            bodyContent = (await JsonSerializer.DeserializeAsync(stream, type, serializerOptions))!;
                         }
                         else
                         {
-                            try
-                            {
-                                GrpcServerLog.DeserializingMessage(serverCallContext.Logger, serverCallContext.DescriptorInfo.BodyDescriptor.ClrType);
-                                bodyContent = (IMessage)(await JsonSerializer.DeserializeAsync(stream, serverCallContext.DescriptorInfo.BodyDescriptor.ClrType, serializerOptions))!;
-                            }
-                            catch (JsonException)
-                            {
-                                throw new RpcException(new Status(StatusCode.InvalidArgument, "Request JSON payload is not correctly formatted."));
-                            }
-                            catch (Exception exception)
-                            {
-                                throw new RpcException(new Status(StatusCode.InvalidArgument, exception.Message));
-                            }
+                            type = serverCallContext.DescriptorInfo.BodyDescriptor.ClrType;
+
+                            GrpcServerLog.DeserializingMessage(serverCallContext.Logger, type);
+                            bodyContent = (IMessage)(await JsonSerializer.DeserializeAsync(stream, serverCallContext.DescriptorInfo.BodyDescriptor.ClrType, serializerOptions))!;
                         }
+
+                        if (bodyContent == null)
+                        {
+                            throw new InvalidOperationException($"Unable to deserialize null to {type.Name}.");
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                        throw new RpcException(new Status(StatusCode.InvalidArgument, "Request JSON payload is not correctly formatted."));
+                    }
+                    catch (Exception exception)
+                    {
+                        throw new RpcException(new Status(StatusCode.InvalidArgument, exception.Message));
                     }
                     finally
                     {
