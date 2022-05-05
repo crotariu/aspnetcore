@@ -554,6 +554,128 @@ public class UnaryServerCallHandlerTests : LoggedTest
     }
 
     [Fact]
+    public async Task HandleCallAsync_HttpBodyRequest_RawRequestAvailable()
+    {
+        // Arrange
+        string? requestContentType = null;
+        byte[]? requestData = null;
+        UnaryServerMethod<JsonTranscodingGreeterService, HttpBody, HelloReply> invoker = (s, r, c) =>
+        {
+            requestContentType = r.ContentType;
+            requestData = r.Data.ToByteArray();
+
+            var responseXml = XDocument.Load(new MemoryStream(requestData));
+            var name = (string)responseXml.Element("name")!;
+
+            return Task.FromResult(new HelloReply { Message = $"Hello {name}!" });
+        };
+
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            CreateServiceMethod("HttpRequestBody", HttpBody.Parser, HelloReply.Parser),
+            descriptorInfo: TestHelpers.CreateDescriptorInfo(bodyDescriptor: HttpBody.Descriptor));
+        var requestContent = new XDocument(new XElement("name", "World")).ToString();
+
+        var httpContext = TestHelpers.CreateHttpContext();
+        httpContext.Request.ContentType = "application/xml";
+        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestContent));
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        Assert.Equal("application/xml", requestContentType);
+        Assert.Equal(requestContent, Encoding.UTF8.GetString(requestData!));
+
+        Assert.Equal(200, httpContext.Response.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", httpContext.Response.ContentType);
+
+        httpContext.Response.Body.Seek(0, SeekOrigin.Begin);
+        using var responseJson = JsonDocument.Parse(httpContext.Response.Body);
+        Assert.Equal(@"Hello World!", responseJson.RootElement.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task HandleCallAsync_SubHttpBodyRequest_RawRequestAvailable()
+    {
+        // Arrange
+        HttpBodySubField? request = null;
+        UnaryServerMethod<JsonTranscodingGreeterService, HttpBodySubField, HelloReply> invoker = (s, r, c) =>
+        {
+            request = r;
+            return Task.FromResult(new HelloReply { Message = $"Hello {r.Name}" });
+        };
+
+        ServiceDescriptorHelpers.TryResolveDescriptors(HttpBodySubField.Descriptor, "sub", out var bodyFieldDescriptors);
+
+        var descriptorInfo = TestHelpers.CreateDescriptorInfo(
+            bodyDescriptor: HttpBody.Descriptor,
+            bodyFieldDescriptors: bodyFieldDescriptors);
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            CreateServiceMethod("HttpRequestBody", HttpBodySubField.Parser, HelloReply.Parser),
+            descriptorInfo);
+        var requestContent = new XDocument(new XElement("name", "World")).ToString();
+
+        var httpContext = TestHelpers.CreateHttpContext();
+        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestContent));
+        httpContext.Request.Query = new QueryCollection(new Dictionary<string, StringValues>
+        {
+            ["name"] = "QueryStringTestName!"
+        });
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        Assert.NotNull(request);
+        Assert.Equal("QueryStringTestName!", request!.Name);
+        Assert.Equal("", request!.Sub.ContentType);
+        Assert.Equal(requestContent, Encoding.UTF8.GetString(request!.Sub.Data.ToByteArray()));
+    }
+
+    [Fact]
+    public async Task HandleCallAsync_NestedSubHttpBodyRequest_RawRequestAvailable()
+    {
+        // Arrange
+        NestedHttpBodySubField? request = null;
+        UnaryServerMethod<JsonTranscodingGreeterService, NestedHttpBodySubField, HelloReply> invoker = (s, r, c) =>
+        {
+            request = r;
+            return Task.FromResult(new HelloReply { Message = $"Hello {r.Name}" });
+        };
+
+        ServiceDescriptorHelpers.TryResolveDescriptors(NestedHttpBodySubField.Descriptor, "sub.sub", out var bodyFieldDescriptors);
+
+        var descriptorInfo = TestHelpers.CreateDescriptorInfo(
+            bodyDescriptor: HttpBody.Descriptor,
+            bodyFieldDescriptors: bodyFieldDescriptors);
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            CreateServiceMethod("HttpRequestBody", NestedHttpBodySubField.Parser, HelloReply.Parser),
+            descriptorInfo);
+        var requestContent = new XDocument(new XElement("name", "World")).ToString();
+
+        var httpContext = TestHelpers.CreateHttpContext();
+        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestContent));
+        httpContext.Request.Query = new QueryCollection(new Dictionary<string, StringValues>
+        {
+            ["name"] = "QueryStringTestName!",
+            ["sub.name"] = "SubQueryStringTestName!"
+        });
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        Assert.NotNull(request);
+        Assert.Equal("QueryStringTestName!", request!.Name);
+        Assert.Equal("SubQueryStringTestName!", request!.Sub.Name);
+        Assert.Equal("", request!.Sub.Sub.ContentType);
+        Assert.Equal(requestContent, Encoding.UTF8.GetString(request!.Sub.Sub.Data.ToByteArray()));
+    }
+
+    [Fact]
     public async Task HandleCallAsync_HttpBodyResponse_BodyReturned()
     {
         // Arrange

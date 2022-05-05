@@ -16,6 +16,16 @@ service HttpBodyService {
   }
 }
 
+message HttpBodySubField {
+  string name = 1;
+  google.api.HttpBody sub = 2;
+}
+
+message NestedHttpBodySubField {
+  string name = 1;
+  HttpBodySubField sub = 2;
+}
+
 message HelloWorldRequest {
   string name = 1;
 }
