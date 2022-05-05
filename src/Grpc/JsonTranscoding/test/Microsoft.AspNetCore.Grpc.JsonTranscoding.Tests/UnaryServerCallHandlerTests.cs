@@ -3,6 +3,8 @@
 
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
+using Google.Api;
 using Google.Protobuf;
 using Google.Protobuf.Collections;
 using Google.Protobuf.Reflection;
@@ -61,6 +63,9 @@ public class UnaryServerCallHandlerTests : LoggedTest
         await unaryServerCallHandler.HandleCallAsync(httpContext);
 
         // Assert
+        Assert.Equal(200, httpContext.Response.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", httpContext.Response.ContentType);
+
         Assert.NotNull(request);
         Assert.Equal("TestName!", request!.Name);
         Assert.Equal("Subfield!", request!.Sub.Subfield);
@@ -549,6 +554,37 @@ public class UnaryServerCallHandlerTests : LoggedTest
     }
 
     [Fact]
+    public async Task HandleCallAsync_HttpBodyResponse_BodyReturned()
+    {
+        // Arrange
+        UnaryServerMethod<JsonTranscodingGreeterService, HelloRequest, HttpBody> invoker = (s, r, c) =>
+        {
+            return Task.FromResult(new HttpBody
+            {
+                ContentType = "application/xml",
+                Data = ByteString.CopyFrom(Encoding.UTF8.GetBytes("<message>Hello world</message>"))
+            });
+        };
+
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            CreateServiceMethod("HttpResponseBody", HelloRequest.Parser, HttpBody.Parser));
+
+        var httpContext = TestHelpers.CreateHttpContext();
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        Assert.Equal(200, httpContext.Response.StatusCode);
+        Assert.Equal("application/xml", httpContext.Response.ContentType);
+
+        httpContext.Response.Body.Seek(0, SeekOrigin.Begin);
+        var responseXml = XDocument.Load(httpContext.Response.Body);
+        Assert.Equal(@"Hello world", (string)responseXml.Element("message")!);
+    }
+
+    [Fact]
     public async Task HandleCallAsync_UserState_HttpContextInUserState()
     {
         object? requestHttpContext = null;
@@ -891,7 +927,7 @@ public class UnaryServerCallHandlerTests : LoggedTest
         var unaryServerCallHandler = CreateCallHandler(
             invoker,
             descriptorInfo: TestHelpers.CreateDescriptorInfo(bodyDescriptor: HelloRequest.Descriptor),
-            JsonTranscodingOptions: new GrpcJsonTranscodingOptions
+            jsonTranscodingOptions: new GrpcJsonTranscodingOptions
             {
                 TypeRegistry = typeRegistry
             });
@@ -924,7 +960,24 @@ public class UnaryServerCallHandlerTests : LoggedTest
         UnaryServerMethod<JsonTranscodingGreeterService, HelloRequest, HelloReply> invoker,
         CallHandlerDescriptorInfo? descriptorInfo = null,
         List<(Type Type, object[] Args)>? interceptors = null,
-        GrpcJsonTranscodingOptions? JsonTranscodingOptions = null)
+        GrpcJsonTranscodingOptions? jsonTranscodingOptions = null)
+    {
+        return CreateCallHandler(
+            invoker,
+            CreateServiceMethod("TestMethodName", HelloRequest.Parser, HelloReply.Parser),
+            descriptorInfo,
+            interceptors,
+            jsonTranscodingOptions);
+    }
+
+    private UnaryServerCallHandler<JsonTranscodingGreeterService, TRequest, TResponse> CreateCallHandler<TRequest, TResponse>(
+        UnaryServerMethod<JsonTranscodingGreeterService, TRequest, TResponse> invoker,
+        Method<TRequest, TResponse> method,
+        CallHandlerDescriptorInfo? descriptorInfo = null,
+        List<(Type Type, object[] Args)>? interceptors = null,
+        GrpcJsonTranscodingOptions? jsonTranscodingOptions = null)
+        where TRequest : class, IMessage<TRequest>
+        where TResponse : class, IMessage<TResponse>
     {
         var serviceOptions = new GrpcServiceOptions();
         if (interceptors != null)
@@ -935,17 +988,17 @@ public class UnaryServerCallHandlerTests : LoggedTest
             }
         }
 
-        var unaryServerCallInvoker = new UnaryServerMethodInvoker<JsonTranscodingGreeterService, HelloRequest, HelloReply>(
+        var unaryServerCallInvoker = new UnaryServerMethodInvoker<JsonTranscodingGreeterService, TRequest, TResponse>(
             invoker,
-            CreateServiceMethod<HelloRequest, HelloReply>("TestMethodName", HelloRequest.Parser, HelloReply.Parser),
+            method,
             MethodOptions.Create(new[] { serviceOptions }),
             new TestGrpcServiceActivator<JsonTranscodingGreeterService>());
 
         var jsonContext = new JsonContext(
-            JsonTranscodingOptions?.JsonSettings ?? new GrpcJsonSettings(),
-            JsonTranscodingOptions?.TypeRegistry ?? TypeRegistry.Empty);
+            jsonTranscodingOptions?.JsonSettings ?? new GrpcJsonSettings(),
+            jsonTranscodingOptions?.TypeRegistry ?? TypeRegistry.Empty);
 
-        return new UnaryServerCallHandler<JsonTranscodingGreeterService, HelloRequest, HelloReply>(
+        return new UnaryServerCallHandler<JsonTranscodingGreeterService, TRequest, TResponse>(
             unaryServerCallInvoker,
             LoggerFactory,
             descriptorInfo ?? TestHelpers.CreateDescriptorInfo(),
