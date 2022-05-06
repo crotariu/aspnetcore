@@ -503,7 +503,7 @@ public class UnaryServerCallHandlerTests : LoggedTest
             invoker,
             descriptorInfo: TestHelpers.CreateDescriptorInfo(bodyDescriptor: HelloRequest.Descriptor));
         var httpContext = TestHelpers.CreateHttpContext();
-        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("{}"));
+        httpContext.Request.Body = new MemoryStream("{}"u8);
         httpContext.Request.ContentType = contentType;
         // Act
         await unaryServerCallHandler.HandleCallAsync(httpContext);
@@ -638,6 +638,33 @@ public class UnaryServerCallHandlerTests : LoggedTest
     }
 
     [Fact]
+    public async Task HandleCallAsync_NullBody_WrapperType_Error()
+    {
+        // Arrange
+        UnaryServerMethod<JsonTranscodingGreeterService, Int32Value, HelloReply> invoker = (s, r, c) =>
+        {
+            return Task.FromResult(new HelloReply());
+        };
+
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            CreateServiceMethod("Int32ValueBody", Int32Value.Parser, HelloReply.Parser),
+            descriptorInfo: TestHelpers.CreateDescriptorInfo(bodyDescriptor: Int32Value.Descriptor));
+
+        var httpContext = TestHelpers.CreateHttpContext();
+        httpContext.Request.ContentType = "application/json";
+        httpContext.Request.Body = new MemoryStream("null"u8);
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        httpContext.Response.Body.Seek(0, SeekOrigin.Begin);
+        using var responseJson = JsonDocument.Parse(httpContext.Response.Body);
+        Assert.Equal("Unable to deserialize null to Int32Value.", responseJson.RootElement.GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task HandleCallAsync_HttpBodyRequest_NoBody_RawRequestAvailable()
     {
         // Arrange
@@ -756,7 +783,7 @@ public class UnaryServerCallHandlerTests : LoggedTest
             return Task.FromResult(new HttpBody
             {
                 ContentType = "application/xml",
-                Data = ByteString.CopyFrom(Encoding.UTF8.GetBytes("<message>Hello world</message>"))
+                Data = ByteString.CopyFrom("<message>Hello world</message>"u8)
             });
         };
 
