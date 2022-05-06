@@ -174,41 +174,27 @@ internal static class JsonRequestHelpers
             IMessage requestMessage;
             if (serverCallContext.DescriptorInfo.BodyDescriptor != null)
             {
+                Type type;
                 object bodyContent;
 
                 if (serverCallContext.DescriptorInfo.BodyDescriptor.FullName == HttpBody.Descriptor.FullName)
                 {
-                    var ms = new MemoryStream();
-                    await serverCallContext.HttpContext.Request.Body.CopyToAsync(ms);
+                    type = typeof(HttpBody);
 
-                    var httpBody = (IMessage)Activator.CreateInstance(serverCallContext.DescriptorInfo.BodyDescriptor.ClrType)!;
-
-                    var contentType = serverCallContext.HttpContext.Request.ContentType;
-                    if (contentType != null)
-                    {
-                        httpBody.Descriptor.Fields[HttpBody.ContentTypeFieldNumber].Accessor.SetValue(httpBody, contentType);
-                    }
-
-                    var data = ms.TryGetBuffer(out var buffer)
-                       ? UnsafeByteOperations.UnsafeWrap(buffer.AsMemory())
-                       : UnsafeByteOperations.UnsafeWrap(ms.ToArray());
-                    httpBody.Descriptor.Fields[HttpBody.DataFieldNumber].Accessor.SetValue(httpBody, data);
-
-                    bodyContent = httpBody;
+                    bodyContent = await ReadHttpBodyAsync(serverCallContext);
                 }
                 else
                 {
                     if (!serverCallContext.IsJsonRequestContent)
                     {
                         GrpcServerLog.UnsupportedRequestContentType(serverCallContext.Logger, serverCallContext.HttpContext.Request.ContentType);
-                        throw new RpcException(new Status(StatusCode.InvalidArgument, "Request content-type of application/json is required."));
+                        throw new InvalidOperationException("Request content-type of application/json is required.");
                     }
 
                     var (stream, usesTranscodingStream) = GetStream(serverCallContext.HttpContext.Request.Body, serverCallContext.RequestEncoding);
 
                     try
                     {
-                        Type type;
                         if (serverCallContext.DescriptorInfo.BodyDescriptorRepeated)
                         {
                             requestMessage = (IMessage)Activator.CreateInstance<TRequest>();
@@ -221,6 +207,11 @@ internal static class JsonRequestHelpers
                             GrpcServerLog.DeserializingMessage(serverCallContext.Logger, type);
 
                             bodyContent = (await JsonSerializer.DeserializeAsync(stream, type, serializerOptions))!;
+
+                            if (bodyContent == null)
+                            {
+                                throw new InvalidOperationException($"Unable to deserialize null to {type.Name}.");
+                            }
                         }
                         else
                         {
@@ -229,19 +220,6 @@ internal static class JsonRequestHelpers
                             GrpcServerLog.DeserializingMessage(serverCallContext.Logger, type);
                             bodyContent = (IMessage)(await JsonSerializer.DeserializeAsync(stream, serverCallContext.DescriptorInfo.BodyDescriptor.ClrType, serializerOptions))!;
                         }
-
-                        if (bodyContent == null)
-                        {
-                            throw new InvalidOperationException($"Unable to deserialize null to {type.Name}.");
-                        }
-                    }
-                    catch (JsonException)
-                    {
-                        throw new RpcException(new Status(StatusCode.InvalidArgument, "Request JSON payload is not correctly formatted."));
-                    }
-                    catch (Exception exception)
-                    {
-                        throw new RpcException(new Status(StatusCode.InvalidArgument, exception.Message));
                     }
                     finally
                     {
@@ -259,6 +237,11 @@ internal static class JsonRequestHelpers
                 }
                 else
                 {
+                    if (bodyContent == null)
+                    {
+                        throw new InvalidOperationException($"Unable to deserialize null to {type.Name}.");
+                    }
+
                     requestMessage = (IMessage)bodyContent;
                 }
             }
@@ -293,11 +276,37 @@ internal static class JsonRequestHelpers
             GrpcServerLog.ReceivedMessage(serverCallContext.Logger);
             return (TRequest)requestMessage;
         }
+        catch (JsonException ex)
+        {
+            GrpcServerLog.ErrorReadingMessage(serverCallContext.Logger, ex);
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Request JSON payload is not correctly formatted."));
+        }
         catch (Exception ex)
         {
             GrpcServerLog.ErrorReadingMessage(serverCallContext.Logger, ex);
-            throw;
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
+    }
+
+    private static async ValueTask<IMessage> ReadHttpBodyAsync(JsonTranscodingServerCallContext serverCallContext)
+    {
+        var ms = new MemoryStream();
+        await serverCallContext.HttpContext.Request.Body.CopyToAsync(ms);
+
+        var httpBody = (IMessage)Activator.CreateInstance(serverCallContext.DescriptorInfo.BodyDescriptor!.ClrType)!;
+
+        var contentType = serverCallContext.HttpContext.Request.ContentType;
+        if (contentType != null)
+        {
+            httpBody.Descriptor.Fields[HttpBody.ContentTypeFieldNumber].Accessor.SetValue(httpBody, contentType);
+        }
+
+        var data = ms.TryGetBuffer(out var buffer)
+           ? UnsafeByteOperations.UnsafeWrap(buffer.AsMemory())
+           : UnsafeByteOperations.UnsafeWrap(ms.ToArray());
+        httpBody.Descriptor.Fields[HttpBody.DataFieldNumber].Accessor.SetValue(httpBody, data);
+
+        return httpBody;
     }
 
     private static List<FieldDescriptor>? GetPathDescriptors(JsonTranscodingServerCallContext serverCallContext, IMessage requestMessage, string path)

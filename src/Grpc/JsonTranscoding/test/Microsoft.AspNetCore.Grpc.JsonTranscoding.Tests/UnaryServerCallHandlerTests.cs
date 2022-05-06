@@ -664,6 +664,42 @@ public class UnaryServerCallHandlerTests : LoggedTest
         Assert.Equal("Unable to deserialize null to Int32Value.", responseJson.RootElement.GetProperty("message").GetString());
     }
 
+    [Theory]
+    [InlineData("null", null)]
+    [InlineData("1", 1.0f)]
+    [InlineData("1.1", 1.1f)]
+    [InlineData(@"""NaN""", float.NaN)]
+    public async Task HandleCallAsync_NestedWrapperType_Success(string requestJson, float? expectedValue)
+    {
+        // Arrange
+        var tcs = new TaskCompletionSource<float?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        UnaryServerMethod<JsonTranscodingGreeterService, HelloRequest, HelloReply> invoker = (s, r, c) =>
+        {
+            tcs.SetResult(r.Wrappers.FloatValue);
+            return Task.FromResult(new HelloReply());
+        };
+
+        Assert.True(ServiceDescriptorHelpers.TryResolveDescriptors(HelloRequest.Descriptor, "wrappers.float_value", out var bodyFieldDescriptors));
+
+        var descriptorInfo = TestHelpers.CreateDescriptorInfo(
+            bodyDescriptor: FloatValue.Descriptor,
+            bodyFieldDescriptors: bodyFieldDescriptors);
+        var unaryServerCallHandler = CreateCallHandler(
+            invoker,
+            descriptorInfo);
+
+        var httpContext = TestHelpers.CreateHttpContext();
+        httpContext.Request.ContentType = "application/json";
+        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestJson));
+
+        // Act
+        await unaryServerCallHandler.HandleCallAsync(httpContext);
+
+        // Assert
+        var value = await tcs.Task.DefaultTimeout();
+        Assert.Equal(expectedValue, value);
+    }
+
     [Fact]
     public async Task HandleCallAsync_HttpBodyRequest_NoBody_RawRequestAvailable()
     {
@@ -1061,8 +1097,8 @@ public class UnaryServerCallHandlerTests : LoggedTest
             });
         });
 
-        var exceptionWrite = TestSink.Writes.Single(w => w.EventId.Name == "ErrorExecutingServiceMethod");
-        Assert.Equal($"Invalid value '{value}' for enum type NestedEnum.", exceptionWrite.Exception.Message);
+        var exceptionWrite = TestSink.Writes.Single(w => w.EventId.Name == "RpcConnectionError");
+        Assert.Equal($"Error status code 'InvalidArgument' with detail 'Invalid value '{value}' for enum type NestedEnum.' raised.", exceptionWrite.Message);
     }
 
     private async Task<HelloRequest> ExecuteUnaryHandler(
